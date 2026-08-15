@@ -482,7 +482,7 @@
       lastLoggedGesture = g;
     }
     viewport.classList.remove('gs-scan','gs-lock','gs-point');
-    if(g === 'OPEN_PALM'){ setBanner('ПОКАЖИХУЙ', 'scan'); viewport.classList.add('gs-scan'); }
+    if(g === 'OPEN_PALM'){ setBanner('ДАВАЙЕБАТЬСЯ', 'scan'); viewport.classList.add('gs-scan'); }
     else if(g === 'FIST'){ setBanner('LOCKED', 'lock'); viewport.classList.add('gs-lock'); }
     else if(g === 'POINT'){ setBanner('NAV MODE', 'point'); cursor.style.display='block'; viewport.classList.add('gs-point'); }
     else if(g === 'PINCH'){ setBanner('SCALING', 'scan'); viewport.classList.add('gs-scan'); }
