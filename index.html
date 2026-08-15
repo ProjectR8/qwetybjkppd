@@ -25,18 +25,20 @@
   *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
 
   html,body{
-    margin:0; padding:0; width:100%; height:100%;
+    margin:0; padding:0; width:100%;
+    height:100vh; height:100dvh;
     background: radial-gradient(ellipse at 50% 20%, #0a1a20 0%, #050a0d 60%, #020405 100%);
     color: var(--cyan);
     font-family: var(--font-mono);
-    overflow: hidden;
+    overflow:hidden;
     user-select:none;
   }
 
   #app{
     position:relative;
-    width:100vw; height:100vh;
+    width:100%; height:100vh; height:100dvh;
     display:flex; flex-direction:column;
+    overflow-y:auto; overflow-x:hidden;
   }
 
   /* ---------- scanlines / vignette ---------- */
@@ -89,10 +91,16 @@
     min-height:0;
   }
   @media (max-width: 820px){
-    #main{ grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
-    #telemetry{ order:3; max-height:120px; }
-    #filepanel{ order:2; flex-direction:row !important; overflow-x:auto; overflow-y:hidden !important; }
-    #filepanel .card{ min-width:140px; }
+    #main{
+      grid-template-columns: 1fr;
+      grid-template-rows: 46vh auto auto auto;
+      overflow-y: visible;
+    }
+    #viewport{ min-height:0; }
+    #telemetry{ order:2; max-height:160px; }
+    #filepanel{ order:3; max-height:220px; }
+    #filecards{ flex-direction:column; }
+    #legend{ order:4; padding-bottom:16px; }
   }
 
   .panel-title{
@@ -122,10 +130,14 @@
 
   /* ---------- center viewport ---------- */
   #viewport{
-    position:relative; border:1px solid var(--line); border-radius:4px; overflow:hidden;
+    position:relative; border:2px solid var(--line); border-radius:4px; overflow:hidden;
     background:#000;
     box-shadow: 0 0 30px rgba(79,216,255,0.08);
+    transition: border-color .15s, box-shadow .15s;
   }
+  #viewport.gs-scan{ border-color: var(--cyan); box-shadow: 0 0 50px rgba(79,216,255,0.45); }
+  #viewport.gs-lock{ border-color: var(--red); box-shadow: 0 0 50px rgba(255,79,79,0.45); }
+  #viewport.gs-point{ border-color: var(--amber); box-shadow: 0 0 50px rgba(255,184,79,0.45); }
   #video{
     position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
     transform: scaleX(-1); filter: saturate(0.7) contrast(1.15) brightness(0.85) hue-rotate(160deg);
@@ -240,6 +252,7 @@
     <p>Инициализация требует доступ к камере. Управление интерфейсом — жестами руки: раскрытая ладонь, кулак, щипок, указательный палец, палец вверх.</p>
     <button id="startBtn">АКТИВИРОВАТЬ КАМЕРУ</button>
     <div class="err" id="gateErr"></div>
+    <div class="err" id="diag" style="color:#ffb84f;"></div>
   </div>
 
   <div id="topbar">
@@ -354,13 +367,26 @@
   const gateErr = document.getElementById('gateErr');
   const video = document.getElementById('video');
   const statusDot = document.getElementById('statusDot');
+  const diagEl = document.getElementById('diag');
+
+  // diagnостика окружения сразу при загрузке
+  (function envCheck(){
+    const secure = window.isSecureContext;
+    const hasGUM = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    const msgs = [];
+    if(!secure) msgs.push('НЕБЕЗОПАСНЫЙ КОНТЕКСТ: нужен HTTPS или localhost (сейчас: ' + location.protocol + ')');
+    if(!hasGUM) msgs.push('getUserMedia недоступен в этом браузере/окружении (возможно, это встроенный просмотрщик без доступа к камере)');
+    if(window.self !== window.top) msgs.push('Страница открыта внутри iframe — если это превью чата, камера скорее всего заблокирована. Открой файл отдельной вкладкой/хостингом.');
+    diagEl.textContent = msgs.join(' | ');
+  })();
 
   startBtn.addEventListener('click', async ()=>{
     startBtn.disabled = true;
     startBtn.textContent = 'ПОДКЛЮЧЕНИЕ...';
+    gateErr.textContent = '';
     try{
       if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-        throw new Error('getUserMedia недоступен (нужен HTTPS или localhost)');
+        throw new Error('getUserMedia недоступен (нужен HTTPS или localhost, либо браузер/окружение не поддерживает камеру)');
       }
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width:{ideal:640}, height:{ideal:480} }, audio:false
@@ -370,11 +396,15 @@
       gate.style.display='none';
       statusDot.classList.add('live');
       log('КАМЕРА АКТИВНА', 'ok');
+      if(typeof Hands === 'undefined' || typeof Camera === 'undefined'){
+        throw new Error('Библиотека MediaPipe не загрузилась с CDN (проверь интернет-соединение)');
+      }
       initHands();
     }catch(e){
-      gateErr.textContent = 'ОШИБКА: ' + e.message;
+      gateErr.textContent = 'ОШИБКА (' + (e.name||'Error') + '): ' + e.message;
       startBtn.disabled = false;
       startBtn.textContent = 'ПОВТОРИТЬ';
+      gate.style.display = 'flex';
     }
   });
 
@@ -451,11 +481,12 @@
       log('ЖЕСТ: ' + (labelMap[g]||g), g==='FIST' ? 'warn' : 'ok');
       lastLoggedGesture = g;
     }
-    if(g === 'OPEN_PALM'){ setBanner('SCANNING', 'scan'); }
-    else if(g === 'FIST'){ setBanner('LOCKED', 'lock'); }
-    else if(g === 'POINT'){ setBanner('NAV MODE', 'point'); cursor.style.display='block'; }
-    else if(g === 'PINCH'){ setBanner('SCALING', 'scan'); }
-    else if(g === 'THUMB_UP'){ setBanner('CONFIRMED', 'point'); }
+    viewport.classList.remove('gs-scan','gs-lock','gs-point');
+    if(g === 'OPEN_PALM'){ setBanner('SCANNING', 'scan'); viewport.classList.add('gs-scan'); }
+    else if(g === 'FIST'){ setBanner('LOCKED', 'lock'); viewport.classList.add('gs-lock'); }
+    else if(g === 'POINT'){ setBanner('NAV MODE', 'point'); cursor.style.display='block'; viewport.classList.add('gs-point'); }
+    else if(g === 'PINCH'){ setBanner('SCALING', 'scan'); viewport.classList.add('gs-scan'); }
+    else if(g === 'THUMB_UP'){ setBanner('CONFIRMED', 'point'); viewport.classList.add('gs-point'); }
     else { setBanner('STANDBY',''); cursor.style.display='none'; }
   }
 
@@ -481,9 +512,8 @@
     const thumbExtended = thumbDist > 0.9;
 
     const pinchDist = dist(lm[4], lm[8]) / handSize;
-    const othersCurled = !mid && !ring;
 
-    if(pinchDist < 0.35 && othersCurled){
+    if(pinchDist < 0.45){
       return 'PINCH';
     }
     if(idx && mid && ring && pinky){
@@ -586,31 +616,37 @@
         const lm = results.multiHandLandmarks[0];
         drawSkeleton(lm);
 
-        const g = classify(lm);
-        pushGesture(g);
+        try{
+          const g = classify(lm);
+          console.log('[gesture]', g);
+          pushGesture(g);
 
-        // pinch -> core scale
-        const handSize = dist(lm[0], lm[9]) || 0.001;
-        if(g === 'PINCH'){
-          const pinchDist = dist(lm[4], lm[8]) / handSize;
-          coreScaleTarget = 0.6 + Math.min(1.6, pinchDist*3.2);
-        }
-        // point -> cursor
-        if(g === 'POINT'){
-          updateCursor(lm);
-        } else {
-          cursor.classList.remove('select');
-        }
-        // thumbs up -> select, debounced
-        if(g === 'THUMB_UP'){
-          const now = performance.now();
-          if(now - lastThumbsUpTime > 900){
-            lastThumbsUpTime = now;
-            cursor.style.display='block';
-            cursor.classList.add('select');
-            selectHot();
-            setTimeout(()=>cursor.classList.remove('select'), 400);
+          // pinch -> core scale
+          const handSize = dist(lm[0], lm[9]) || 0.001;
+          if(g === 'PINCH'){
+            const pinchDist = dist(lm[4], lm[8]) / handSize;
+            coreScaleTarget = 0.6 + Math.min(1.6, pinchDist*3.2);
           }
+          // point -> cursor
+          if(g === 'POINT'){
+            updateCursor(lm);
+          } else {
+            cursor.classList.remove('select');
+          }
+          // thumbs up -> select, debounced
+          if(g === 'THUMB_UP'){
+            const now = performance.now();
+            if(now - lastThumbsUpTime > 900){
+              lastThumbsUpTime = now;
+              cursor.style.display='block';
+              cursor.classList.add('select');
+              selectHot();
+              setTimeout(()=>cursor.classList.remove('select'), 400);
+            }
+          }
+        }catch(err){
+          console.error('[gesture processing error]', err);
+          log('ОШИБКА ОБРАБОТКИ: ' + err.message, 'warn');
         }
       } else {
         handsDetected = false;
