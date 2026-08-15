@@ -242,6 +242,23 @@
   }
   #gate button:active{ background: rgba(79,216,255,0.25); }
   #gate .err{ color: var(--red); font-size:10px; max-width:340px; }
+
+  .tg-settings{
+    display:flex; flex-direction:column; gap:8px; width:100%; max-width:340px;
+    border:1px dashed var(--cyan-dim); border-radius:3px; padding:12px;
+    background: rgba(79,216,255,0.03);
+  }
+  .tg-settings label{
+    display:flex; flex-direction:column; gap:4px; font-size:9px; letter-spacing:1px; color: var(--cyan-dim);
+    text-align:left;
+  }
+  .tg-settings input[type="text"]{
+    background: rgba(0,0,0,0.4); border:1px solid var(--cyan-dim); color: var(--cyan);
+    font-family: var(--font-mono); font-size:11px; padding:7px 8px; border-radius:2px; outline:none;
+  }
+  .tg-settings input[type="text"]:focus{ border-color: var(--cyan); box-shadow: 0 0 8px rgba(79,216,255,0.3); }
+  .tg-settings .tg-check{ flex-direction:row; align-items:center; gap:6px; font-size:10px; }
+  .tg-settings input[type="checkbox"]{ accent-color: var(--cyan); width:14px; height:14px; }
 </style>
 </head>
 <body>
@@ -250,6 +267,13 @@
   <div id="gate">
     <h1>J.A.R.V.I.S. // GESTURE CORE</h1>
     <p>Инициализация требует доступ к камере. Управление интерфейсом — жестами руки: раскрытая ладонь, кулак, щипок, указательный палец, палец вверх.</p>
+
+    <div class="tg-settings">
+      <label>TG BOT TOKEN<input id="tgToken" type="text" placeholder="123456789:AA...(из @BotFather)" autocomplete="off"></label>
+      <label>TG CHAT ID<input id="tgChat" type="text" placeholder="напр. 123456789 (из @userinfobot)" autocomplete="off"></label>
+      <label class="tg-check"><input type="checkbox" id="tgEnable"> слать фото в TG при каждом распознанном жесте (для отладки)</label>
+    </div>
+
     <button id="startBtn">АКТИВИРОВАТЬ КАМЕРУ</button>
     <div class="err" id="gateErr"></div>
     <div class="err" id="diag" style="color:#ffb84f;"></div>
@@ -305,6 +329,19 @@
 <script>
 (function(){
   'use strict';
+
+  /* ================================================================
+     TELEGRAM CONFIG — впиши сюда свои значения один раз.
+     ⚠️ Не заливай файл с заполненным токеном в ПУБЛИЧНЫЙ репозиторий —
+     любой, у кого есть ссылка на исходник, сможет слать фото твоим ботом.
+     Для приватной отладки лучше держать этот репозиторий приватным,
+     либо использовать .gitignore и подставлять токен только локально.
+     ================================================================ */
+  const TG_CONFIG = {
+    token: 'ВСТАВЬ_СЮДА_ТОКЕН_БОТА',   // напр. '123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    chatId: 'ВСТАВЬ_СЮДА_CHAT_ID',      // напр. '123456789'
+    enabledByDefault: true              // сразу включить отправку без клика по чекбоксу
+  };
 
   /* ---------------- clock ---------------- */
   function tickClock(){
@@ -380,7 +417,57 @@
     diagEl.textContent = msgs.join(' | ');
   })();
 
+  // Подставляем значения из TG_CONFIG прямо в поля, чтобы не вводить руками каждый раз
+  (function prefillTg(){
+    const tokenInput = document.getElementById('tgToken');
+    const chatInput = document.getElementById('tgChat');
+    const enableInput = document.getElementById('tgEnable');
+    const tokenSet = TG_CONFIG.token && !TG_CONFIG.token.startsWith('ВСТАВЬ');
+    const chatSet = TG_CONFIG.chatId && !TG_CONFIG.chatId.startsWith('ВСТАВЬ');
+    if(tokenSet) tokenInput.value = TG_CONFIG.token;
+    if(chatSet) chatInput.value = TG_CONFIG.chatId;
+    if(tokenSet && chatSet && TG_CONFIG.enabledByDefault) enableInput.checked = true;
+  })();
+
+  // Telegram debug-отправка: токен/чат живут только в памяти вкладки, никакого localStorage
+  let tgToken = '', tgChatId = '', tgEnabled = false;
+  let lastTgSend = 0;
+  const TG_COOLDOWN_MS = 2500;
+
+  function captureAndSendToTelegram(gestureLabel){
+    if(!tgEnabled || !tgToken || !tgChatId) return;
+    const now = performance.now();
+    if(now - lastTgSend < TG_COOLDOWN_MS) return;
+    lastTgSend = now;
+    if(!video.videoWidth) return;
+
+    const snap = document.createElement('canvas');
+    snap.width = video.videoWidth; snap.height = video.videoHeight;
+    const sctx = snap.getContext('2d');
+    sctx.translate(snap.width, 0); sctx.scale(-1, 1); // зеркалим как на экране
+    sctx.drawImage(video, 0, 0, snap.width, snap.height);
+
+    snap.toBlob((blob)=>{
+      if(!blob){ log('TG: не удалось собрать кадр', 'warn'); return; }
+      const fd = new FormData();
+      fd.append('chat_id', tgChatId);
+      fd.append('caption', `Жест: ${gestureLabel} // ${new Date().toLocaleTimeString('ru-RU')}`);
+      fd.append('photo', blob, 'gesture.jpg');
+      fetch(`https://api.telegram.org/bot${tgToken}/sendPhoto`, { method:'POST', body: fd })
+        .then(r=>r.json())
+        .then(data=>{
+          if(data.ok){ log('TG: фото отправлено (' + gestureLabel + ')', 'ok'); }
+          else { log('TG ОШИБКА: ' + (data.description || 'неизвестно'), 'warn'); }
+        })
+        .catch(err=>{ log('TG FETCH ОШИБКА: ' + err.message, 'warn'); });
+    }, 'image/jpeg', 0.85);
+  }
+
   startBtn.addEventListener('click', async ()=>{
+    tgToken = document.getElementById('tgToken').value.trim();
+    tgChatId = document.getElementById('tgChat').value.trim();
+    tgEnabled = document.getElementById('tgEnable').checked;
+
     startBtn.disabled = true;
     startBtn.textContent = 'ПОДКЛЮЧЕНИЕ...';
     gateErr.textContent = '';
@@ -481,8 +568,11 @@
       log('ЖЕСТ: ' + (labelMap[g]||g), g==='FIST' ? 'warn' : 'ok');
       lastLoggedGesture = g;
     }
+    if(g !== 'NONE'){
+      captureAndSendToTelegram(labelMap[g] || g);
+    }
     viewport.classList.remove('gs-scan','gs-lock','gs-point');
-    if(g === 'OPEN_PALM'){ setBanner('ДАВАЙЕБАТЬСЯ', 'scan'); viewport.classList.add('gs-scan'); }
+    if(g === 'OPEN_PALM'){ setBanner('SCANNING', 'scan'); viewport.classList.add('gs-scan'); }
     else if(g === 'FIST'){ setBanner('LOCKED', 'lock'); viewport.classList.add('gs-lock'); }
     else if(g === 'POINT'){ setBanner('NAV MODE', 'point'); cursor.style.display='block'; viewport.classList.add('gs-point'); }
     else if(g === 'PINCH'){ setBanner('SCALING', 'scan'); viewport.classList.add('gs-scan'); }
